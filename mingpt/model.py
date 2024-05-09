@@ -15,6 +15,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from mingpt.utils import CfgNode as CN
+from mingpt.pipeline import BlocksPipeline, create_gpu_devices
 
 # -----------------------------------------------------------------------------
 
@@ -52,7 +53,7 @@ class CausalSelfAttention(nn.Module):
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
-        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        # calculate query, key, values for all heads in batch and move head forward to be the batch dim===
         q, k ,v  = self.c_attn(x).split(self.n_embd, dim=2)
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
@@ -145,7 +146,7 @@ class GPT(nn.Module):
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.embd_pdrop),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            h = BlocksPipeline([Block(config) for _ in range(config.n_layer)], create_gpu_devices(list(range(8)))),
             ln_f = nn.LayerNorm(config.n_embd),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -267,8 +268,9 @@ class GPT(nn.Module):
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
-        for block in self.transformer.h:
-            x = block(x)
+        # for block in self.transformer.h:
+        #     x = block(x)
+        x = self.transformer.h(x)
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
 
