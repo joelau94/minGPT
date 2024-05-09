@@ -9,6 +9,7 @@ from typing import List, Optional
 class BlocksPipeline(nn.Module):
 
     def __init__(self, blocks: List[nn.Module], devices):
+        super().__init__()
         self.blocks = blocks
         self.devices = devices
 

@@ -17,6 +17,8 @@ from torch.nn import functional as F
 from mingpt.utils import CfgNode as CN
 from mingpt.pipeline import BlocksPipeline, create_gpu_devices
 
+GPUS = list(range(4))
+
 # -----------------------------------------------------------------------------
 
 class NewGELU(nn.Module):
@@ -146,7 +148,7 @@ class GPT(nn.Module):
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.embd_pdrop),
-            h = BlocksPipeline([Block(config) for _ in range(config.n_layer)], create_gpu_devices(list(range(8)))),
+            h = BlocksPipeline([Block(config) for _ in range(config.n_layer)], create_gpu_devices(GPUS)),
             ln_f = nn.LayerNorm(config.n_embd),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)

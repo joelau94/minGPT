@@ -30,7 +30,9 @@ def get_config():
 
     # model
     C.model = GPT.get_default_config()
-    C.model.model_type = 'gpt-nano'
+    C.model.model_type = 'gpt2'
+    
+    C.device = 'cpu'
 
     # trainer
     C.trainer = Trainer.get_default_config()
@@ -201,7 +203,7 @@ if __name__ == '__main__':
             # revert model to training mode
             model.train()
 
-    trainer.set_callback('on_batch_end', batch_end_callback)
+    # trainer.set_callback('on_batch_end', batch_end_callback)
 
     # run the optimization
     trainer.run()
