@@ -148,6 +148,7 @@ class GPT(nn.Module):
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.embd_pdrop),
+            # h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             h = BlocksPipeline([Block(config) for _ in range(config.n_layer)], create_gpu_devices(GPUS)),
             ln_f = nn.LayerNorm(config.n_embd),
         ))
@@ -272,6 +273,7 @@ class GPT(nn.Module):
         x = self.transformer.drop(tok_emb + pos_emb)
         # for block in self.transformer.h:
         #     x = block(x)
+        x = x.to(device)
         x = self.transformer.h(x)
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)

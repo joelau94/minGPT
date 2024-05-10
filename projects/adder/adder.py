@@ -206,4 +206,4 @@ if __name__ == '__main__':
     # trainer.set_callback('on_batch_end', batch_end_callback)
 
     # run the optimization
-    trainer.run()
+    trainer.run_inference()

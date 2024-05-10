@@ -37,11 +37,23 @@ class BlocksPipeline(nn.Module):
             device: torch.cuda.Stream(device)
             for device in devices
         }
+        
+        self._first_blocks_inited = False
+        
+    def init_first_blocks(self):
+        if not self._first_blocks_inited:
+            for device_id in range(self.num_devices):
+                device = self.devices(device_id)
+                block_id = self.blocks_per_stage * device_id
+                with torch.cuda.stream(self.params_copy_streams[device]):
+                    self.blocks[block_id] = self.blocks[block_id].to(device, non_blocking=False)
+            self._first_blocks_inited = True
 
     def forward(self, x: torch.Tensor):
+        self.init_first_blocks()
         for block_id in range(self.num_blocks):
-            local_block_id = block_id % self.num_devices
-            device_id = block_id // self.num_devices
+            local_block_id = block_id % self.blocks_per_stage
+            device_id = block_id // self.blocks_per_stage
             device = self.devices[device_id]
 
             next_block_id = (device_id * self.blocks_per_stage +
@@ -50,17 +62,23 @@ class BlocksPipeline(nn.Module):
             params_copy_stream = self.params_copy_streams[device]
             compute_stream = self.compute_streams[device]
             
+            data_move_event = None
             if device != x.device:
                 with torch.cuda.stream(self.data_copy_streams[device]):
                     x = x.to(device)
+                    data_move_event = torch.cuda.Event()
+                    data_move_event.record()
 
             with torch.cuda.stream(compute_stream):
+                if data_move_event is not None:
+                    compute_stream.wait_event(data_move_event)
                 x = self.blocks[block_id](x)
                 compute_done_event = torch.cuda.Event()
+                compute_done_event.record(compute_stream)
 
             with torch.cuda.stream(params_copy_stream):
                 self.blocks[next_block_id] = self.blocks[next_block_id].to(device, non_blocking=True)
-                compute_done_event.record(params_copy_stream)
+                params_copy_stream.wait_event(compute_done_event)
                 self.blocks[block_id] = self.blocks[block_id].to("cpu", non_blocking=True)
                 
         return x

@@ -10,6 +10,8 @@ import torch
 from torch.utils.data.dataloader import DataLoader
 from mingpt.utils import CfgNode as CN
 
+import torch.cuda.profiler as profiler
+
 class Trainer:
 
     @staticmethod
@@ -129,6 +131,7 @@ class Trainer:
         self.iter_num = 0
         self.iter_time = time.time()
         data_iter = iter(train_loader)
+        profiler.start()
         for batch_id in range(100):
         # while True:
 
@@ -162,3 +165,4 @@ class Trainer:
             # # termination conditions
             # if config.max_iters is not None and self.iter_num >= config.max_iters:
             #     break
+        profiler.stop()
