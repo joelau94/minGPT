@@ -43,7 +43,7 @@ class BlocksPipeline(nn.Module):
     def init_first_blocks(self):
         if not self._first_blocks_inited:
             for device_id in range(self.num_devices):
-                device = self.devices(device_id)
+                device = self.devices[device_id]
                 block_id = self.blocks_per_stage * device_id
                 with torch.cuda.stream(self.params_copy_streams[device]):
                     self.blocks[block_id] = self.blocks[block_id].to(device, non_blocking=False)

@@ -273,8 +273,8 @@ class GPT(nn.Module):
         x = self.transformer.drop(tok_emb + pos_emb)
         # for block in self.transformer.h:
         #     x = block(x)
-        x = x.to(device)
         x = self.transformer.h(x)
+        x = x.to(device)
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
 
