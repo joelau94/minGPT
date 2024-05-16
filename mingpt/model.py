@@ -97,7 +97,7 @@ class Block(nn.Module):
 
 class EmbeddingStage(nn.Module):
     def __init__(self, wte, wpe, drop):
-        super.__init__()
+        super().__init__()
         self.wte = wte
         self.wpe = wpe
         self.drop = drop
@@ -178,7 +178,7 @@ class GPT(nn.Module):
         self.ln_f = nn.LayerNorm(config.n_embd)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         
-        self.pipeline = GPTPipeline(self.embeddings, self.transformer_blocks, self.lm_head)
+        self.pipeline = GPTPipeline(self.embeddings, self.transformer_blocks, self.lm_head, create_gpu_devices(GPUS))
 
         # init all weights, and apply a special scaled init to the residual projections, per GPT-2 paper
         self.apply(self._init_weights)
@@ -188,7 +188,7 @@ class GPT(nn.Module):
 
         # report number of parameters (note we don't count the decoder parameters in lm_head)
         # n_params = sum(p.numel() for p in self.transformer.parameters())
-        n_params = sum(sum(p.numel() for p in self.transformer.parameters()) for m in [self.embeddings, self.transformer_blocks, self.lm_head])
+        n_params = sum(sum(p.numel() for p in m.parameters()) for m in [self.embeddings, *self.transformer_blocks, self.lm_head])
         print("number of parameters: %.2fM" % (n_params/1e6,))
 
     def _init_weights(self, module):
