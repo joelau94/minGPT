@@ -30,7 +30,7 @@ def get_config():
 
     # model
     C.model = GPT.get_default_config()
-    C.model.model_type = 'gpt2'
+    C.model.model_type = 'gpt2-large'
     
     C.device = 'cpu'
 
@@ -206,4 +206,4 @@ if __name__ == '__main__':
     # trainer.set_callback('on_batch_end', batch_end_callback)
 
     # run the optimization
-    trainer.run_inference()
+    trainer.run_inference_pipeline()

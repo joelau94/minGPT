@@ -1,7 +1,9 @@
+from queue import Queue
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from typing import List, Optional
+from mingpt.worker import Pack, Task, worker, spawn_device_workers
 
 # from torch.distributed.pipeline.sync.pipe import Pipe
 
@@ -93,7 +95,7 @@ def create_gpu_devices(gpu_ids):
 
 class RotatingBlocksStage(nn.Module):
 
-    def __init__(self, blocks: List[nn.Module], device, copy_stream=None):
+    def __init__(self, blocks: List[nn.Module], device, compute_stream=None, copy_stream=None):
         super().__init__()
         self.blocks = blocks
         self.device = device
@@ -101,7 +103,8 @@ class RotatingBlocksStage(nn.Module):
         self.num_blocks = len(self.blocks)
         assert self.num_blocks > 2
 
-        self.compute_stream = torch.cuda.Stream(device)
+        self.compute_stream = (compute_stream if compute_stream is not None else
+                            torch.cuda.Stream(device))
         self.copy_stream = (copy_stream if copy_stream is not None else
                             torch.cuda.Stream(device))
 
@@ -161,7 +164,7 @@ class SingleBlockStage(nn.Module):
                 self.block = self.block.to(self.device, non_blocking=False)
             self.block_loaded = True
 
-    def forward(self, *args, **kwargs):
+    def forward(self, x: torch.Tensor):
         self.init_load()
         data_move_event = None
         if self.device != x.device:
@@ -173,15 +176,117 @@ class SingleBlockStage(nn.Module):
         with torch.cuda.stream(self.compute_stream):
             if data_move_event is not None:
                 self.compute_stream.wait_event(data_move_event)
-            return self.block(*args, **kwargs)
+            return self.block(x)
 
 
 class Pipeline:
 
-    def __init__(self, batches, stages, devices, copy_streams: Optional[List[torch.cuda.Stream]] = None):
-        self.batches = batches
+    def __init__(self, data_iter, stages):
+        self.data_iter = data_iter
         self.stages = stages
-        self.devices = devices
-        self.copy_streams = copy_streams
+        self.num_stages = len(self.stages)
+        self.model_outputs = Queue()
+    
+    def create_task(self, input_pack, stage_fn, no_grad):
+        def _compute():
+            if no_grad:
+                with torch.no_grad():
+                    return input_pack.call(stage_fn)
+            else:
+                return input_pack.call(stage_fn)
         
-    def schedules
+        task = Task(_compute)
+        return task
+    
+    def run(self, limit=None, no_grad=False):
+        with spawn_device_workers(self.num_stages) as (in_queues, out_queues):
+            flush_count = self.num_stages
+            flush = False
+            warmup_count = -1
+            
+            runs = 0
+            while True:
+                runs += 1
+                if not flush:
+                    try:
+                        batch = next(self.data_iter)
+                        inputs, targets = batch
+                        if limit is not None:
+                            limit -= 1
+                            if limit < 0:
+                                raise StopIteration()
+                        if not isinstance(inputs, List):
+                            inputs = [inputs]
+                        input_pack = Pack(*inputs)
+                        task = self.create_task(input_pack, self.stages[0], no_grad=no_grad)
+                        # print(f"Create task stage 0")
+                        in_queues[0].put(task)
+                        if warmup_count < self.num_stages:
+                            warmup_count += 1
+                    except StopIteration as e:
+                        flush = True
+                
+                if flush:
+                    flush_count -= 1
+                    if flush_count < 0:
+                        break
+                    
+                for stage_id in range(self.num_stages):
+                    # print(f"stage_id={stage_id}, warmup_count={warmup_count}")
+                    if stage_id >= warmup_count:
+                        continue
+                    if stage_id < self.num_stages - flush_count:
+                        continue
+                    ok, output_pack = out_queues[stage_id].get()
+                    # print(f"stage {stage_id} ok? {ok}")
+                    if not ok:
+                        print(f"trace: {output_pack}")
+                        continue
+                    if stage_id == self.num_stages - 1:
+                        self.model_outputs.put(output_pack.args)
+                        print(f"Total outputs: {self.model_outputs.qsize()}")
+                        print(f"output: {output_pack.args[0].shape}")
+                    else:
+                        if output_pack is None:
+                            print(f"stage {stage_id+1} output_pack is None")
+                        task = self.create_task(output_pack, self.stages[stage_id+1], no_grad=no_grad)
+                        # print(f"Create task stage {stage_id+1}")
+                        in_queues[stage_id+1].put(task)
+
+
+class GPTPipeline:
+    def __init__(self, embeddings, blocks, lm_head, devices):
+        self.embeddings = embeddings
+        self.blocks = blocks
+        self.lm_head = lm_head
+        self.devices = devices
+        
+        assert len(self.blocks) % (len(self.devices) - 2) == 0
+        blocks_per_page = len(self.blocks) // (len(self.devices) - 2)
+        assert blocks_per_page > 2
+        
+        splitted_blocks = [
+            blocks[i * blocks_per_page:(i+1) * blocks_per_page]
+            for i in range(len(self.devices) - 2)
+        ]
+        self.num_stages = len(self.devices)
+        
+        self.copy_streams = {
+            device: torch.cuda.Stream(device)
+            for device in devices
+        }
+        self.compute_streams = {
+            device: torch.cuda.Stream(device)
+            for device in devices
+        }
+        
+        self.pipeline_stages = []
+        self.pipeline_stages.append(SingleBlockStage(self.embeddings, self.devices[0], self.compute_streams[self.devices[0]], self.copy_streams[self.devices[0]]))
+        for i, blocks in enumerate(splitted_blocks):
+            device = self.devices[i+1]
+            self.pipeline_stages.append(RotatingBlocksStage(blocks, device, self.compute_streams[device], self.copy_streams[device]))
+        self.pipeline_stages.append(SingleBlockStage(self.lm_head, self.devices[-1], self.compute_streams[self.devices[-1]], self.copy_streams[self.devices[-1]]))
+        
+    def create_pipeline(self, data_iter):
+        self.pipeline = Pipeline(data_iter, self.pipeline_stages)
+        return self.pipeline

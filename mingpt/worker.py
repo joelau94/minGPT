@@ -40,11 +40,11 @@ def worker(in_queue: Queue, out_queue: Queue):
     
 
 @contextmanager
-def spawn_device_workers(devices: List[torch.device]):
+def spawn_device_workers(num_stages):
     in_queues = []
     out_queues = []
     
-    for device in devices:
+    for _ in range(num_stages):
         in_queue = Queue()
         out_queue = Queue()
         
@@ -65,7 +65,7 @@ def spawn_device_workers(devices: List[torch.device]):
         while running:
             out_queue = running.pop()
             ok, info = out_queue.get()
-            if info[1] is None:
+            if info is None:
                 continue
             
             running.add(out_queue)

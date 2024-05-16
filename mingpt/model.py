@@ -15,9 +15,9 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from mingpt.utils import CfgNode as CN
-from mingpt.pipeline import BlocksPipeline, create_gpu_devices
+from mingpt.pipeline import BlocksPipeline, GPTPipeline, create_gpu_devices
 
-GPUS = list(range(4))
+GPUS = list(range(6))
 
 # -----------------------------------------------------------------------------
 
@@ -95,6 +95,24 @@ class Block(nn.Module):
         x = x + self.mlpf(self.ln_2(x))
         return x
 
+class EmbeddingStage(nn.Module):
+    def __init__(self, wte, wpe, drop):
+        super.__init__()
+        self.wte = wte
+        self.wpe = wpe
+        self.drop = drop
+        
+    def forward(self, idx):
+        device = idx.device
+        b, t = idx.size()
+        pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
+
+        # forward the GPT model itself
+        tok_emb = self.wte(idx) # token embeddings of shape (b, t, n_embd)
+        pos_emb = self.wpe(pos) # position embeddings of shape (1, t, n_embd)
+        x = self.drop(tok_emb + pos_emb)
+        return x
+
 class GPT(nn.Module):
     """ GPT Language Model """
 
@@ -144,15 +162,23 @@ class GPT(nn.Module):
                 'gpt-nano':     dict(n_layer=3, n_head=3, n_embd=48),
             }[config.model_type])
 
-        self.transformer = nn.ModuleDict(dict(
-            wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = nn.Embedding(config.block_size, config.n_embd),
-            drop = nn.Dropout(config.embd_pdrop),
-            # h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            h = BlocksPipeline([Block(config) for _ in range(config.n_layer)], create_gpu_devices(GPUS)),
-            ln_f = nn.LayerNorm(config.n_embd),
-        ))
+        # self.transformer = nn.ModuleDict(dict(
+        #     wte = nn.Embedding(config.vocab_size, config.n_embd),
+        #     wpe = nn.Embedding(config.block_size, config.n_embd),
+        #     drop = nn.Dropout(config.embd_pdrop),
+        #     # h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+        #     h = BlocksPipeline([Block(config) for _ in range(config.n_layer)], create_gpu_devices(GPUS)),
+        #     ln_f = nn.LayerNorm(config.n_embd),
+        # ))
+        self.wte = nn.Embedding(config.vocab_size, config.n_embd)
+        self.wpe = nn.Embedding(config.block_size, config.n_embd)
+        self.drop = nn.Dropout(config.embd_pdrop)
+        self.embeddings = EmbeddingStage(self.wte, self.wpe, self.drop)
+        self.transformer_blocks = [Block(config) for _ in range(config.n_layer)]
+        self.ln_f = nn.LayerNorm(config.n_embd)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        
+        self.pipeline = GPTPipeline(self.embeddings, self.transformer_blocks, self.lm_head)
 
         # init all weights, and apply a special scaled init to the residual projections, per GPT-2 paper
         self.apply(self._init_weights)
@@ -161,7 +187,8 @@ class GPT(nn.Module):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
 
         # report number of parameters (note we don't count the decoder parameters in lm_head)
-        n_params = sum(p.numel() for p in self.transformer.parameters())
+        # n_params = sum(p.numel() for p in self.transformer.parameters())
+        n_params = sum(sum(p.numel() for p in self.transformer.parameters()) for m in [self.embeddings, self.transformer_blocks, self.lm_head])
         print("number of parameters: %.2fM" % (n_params/1e6,))
 
     def _init_weights(self, module):

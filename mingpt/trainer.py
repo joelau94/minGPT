@@ -166,3 +166,28 @@ class Trainer:
             # if config.max_iters is not None and self.iter_num >= config.max_iters:
             #     break
         profiler.stop()
+
+    def run_inference_pipeline(self):
+        model, config = self.model, self.config
+
+        # setup the optimizer
+        self.optimizer = model.configure_optimizers(config)
+
+        # setup the dataloader
+        train_loader = DataLoader(
+            self.train_dataset,
+            sampler=torch.utils.data.RandomSampler(self.train_dataset, replacement=True, num_samples=int(1e10)),
+            shuffle=False,
+            pin_memory=True,
+            batch_size=config.batch_size,
+            num_workers=config.num_workers,
+        )
+
+        model.eval()
+        self.iter_num = 0
+        self.iter_time = time.time()
+        data_iter = iter(train_loader)
+        pipeline = model.pipeline.create_pipeline(data_iter)
+        profiler.start()
+        pipeline.run(limit=100, no_grad=True)
+        profiler.stop()
