@@ -1,4 +1,5 @@
 from queue import Queue
+import traceback
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -110,10 +111,11 @@ class RotatingBlocksStage(nn.Module):
         
         self.data_move_event = None
         self.compute_events = [None for _ in range(self.num_blocks)]
+        self.param_load_events = [None for _ in range(self.num_blocks)]
 
         self._init_loaded = False
 
-    def init_load_params(self):
+    def init_load(self):
         if not self._init_loaded:
             with torch.cuda.stream(self.copy_stream):
                 self.blocks[0] = self.blocks[0].to(self.device,
@@ -136,6 +138,8 @@ class RotatingBlocksStage(nn.Module):
                 with torch.cuda.stream(self.copy_stream):
                     self.blocks[next_block_id] = self.blocks[next_block_id].to(
                         self.device, non_blocking=True)
+                    self.param_load_events[next_block_id] = torch.cuda.Event()
+                    self.param_load_events[next_block_id].record(self.copy_stream)
                     if self.compute_events[block_id] is not None:
                         self.copy_stream.wait_event(self.compute_events[block_id])
                     self.blocks[block_id] = self.blocks[block_id].to(
@@ -150,7 +154,8 @@ class RotatingBlocksStage(nn.Module):
         with torch.cuda.stream(self.compute_stream):        
             if self.data_move_event is not None:
                 self.compute_stream.wait_event(self.data_move_event)
-            for block_id in range(self.num_blocks):    
+            for block_id in range(self.num_blocks):
+                self.compute_stream.wait_event(self.param_load_events[block_id])
                 x = self.blocks[block_id](x)
                 self.compute_events[block_id] = torch.cuda.Event()
                 self.compute_events[block_id].record(self.compute_stream)
@@ -252,7 +257,8 @@ class Pipeline:
                     ok, output_pack = out_queues[stage_id].get()
                     # print(f"stage {stage_id} ok? {ok}")
                     if not ok:
-                        print(f"trace: {output_pack}")
+                        trace = ''.join(traceback.format_exception(*output_pack))
+                        print("trace:\n", trace)
                         continue
                     if stage_id == self.num_stages - 1:
                         self.model_outputs.put(output_pack.args)
