@@ -160,10 +160,29 @@ class RotatingBlocksStage(nn.Module):
                     self.copy_stream.wait_event(self.compute_events[block_id])
                 self.blocks[block_id] = self.blocks[block_id].to(
                     "cpu", non_blocking=True)
+
+        def bw_pre_params_copy_hook(module, grad_output):
+            block_id = module._block_id
+            next_block_id = (self.num_blocks + block_id - 1) % self.num_blocks
+            with torch.cuda.stream(self.copy_stream):
+                self.blocks[next_block_id] = self.blocks[next_block_id].to(
+                    self.device, non_blocking=True)
+                self.param_load_events[next_block_id] = torch.cuda.Event()
+                self.param_load_events[next_block_id].record(self.copy_stream)
+                
+        def bw_params_offload_hook(module, grad_input, grad_output):
+            block_id = module._block_id
+            with torch.cuda.stream(self.copy_stream):
+                if self.compute_events[block_id] is not None:
+                    self.copy_stream.wait_event(self.compute_events[block_id])
+                self.blocks[block_id] = self.blocks[block_id].to(
+                    "cpu", non_blocking=True)
         
         for block in self.blocks:
             block.register_forward_pre_hook(fw_pre_params_copy_hook)
             block.register_forward_hook(fw_params_offload_hook)
+            block.register_full_backward_pre_hook(bw_pre_params_copy_hook)
+            block.register_forward_hook(bw_params_offload_hook)
 
 
     def forward(self, x: torch.Tensor):
