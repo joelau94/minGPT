@@ -169,8 +169,13 @@ class RotatingBlocksStage(nn.Module):
                     self.device, non_blocking=True)
                 self.param_load_events[next_block_id] = torch.cuda.Event()
                 self.param_load_events[next_block_id].record(self.copy_stream)
+            with torch.cuda.stream(self.compute_stream):
+                self.compute_stream.wait_event(self.param_load_events[block_id])
                 
         def bw_params_offload_hook(module, grad_input, grad_output):
+            with torch.cuda.stream(self.compute_stream):
+                self.compute_events[block_id] = torch.cuda.Event()
+                self.compute_events[block_id].record(self.compute_stream)
             block_id = module._block_id
             with torch.cuda.stream(self.copy_stream):
                 if self.compute_events[block_id] is not None:
