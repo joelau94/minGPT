@@ -114,12 +114,15 @@ class RotatingBlocksStage(nn.Module):
         self.param_load_events = [None for _ in range(self.num_blocks)]
 
         self._init_loaded = False
+        self.register_hooks()
 
     def init_load(self):
         if not self._init_loaded:
             with torch.cuda.stream(self.copy_stream):
                 self.blocks[0] = self.blocks[0].to(self.device,
-                                                   non_blocking=False)
+                                                   non_blocking=True)
+                self.param_load_events[0] = torch.cuda.Event()
+                self.param_load_events[0].record(self.copy_stream)
             self._init_loaded = True
             
     def recv_data(self, x):
@@ -132,30 +135,46 @@ class RotatingBlocksStage(nn.Module):
     
     def register_hooks(self):
         for block_id in range(self.num_blocks):
-            next_block_id = (block_id + 1) % self.num_blocks
-
-            def fw_pre_params_copy_hook(module, args):
-                with torch.cuda.stream(self.copy_stream):
-                    self.blocks[next_block_id] = self.blocks[next_block_id].to(
-                        self.device, non_blocking=True)
-                    self.param_load_events[next_block_id] = torch.cuda.Event()
-                    self.param_load_events[next_block_id].record(self.copy_stream)
-                    if self.compute_events[block_id] is not None:
-                        self.copy_stream.wait_event(self.compute_events[block_id])
-                    self.blocks[block_id] = self.blocks[block_id].to(
-                        "cpu", non_blocking=True)
+            self.blocks[block_id]._block_id = block_id
             
-            self.blocks[block_id].register_forward_pre_hook(fw_pre_params_copy_hook)
+        # If block_id is hard-coded in a function
+        # for block_id in range(self.num_blocks):
+        #     def hook(...):
+        #         self.block[block_id] = self.block[block_id].to(device)
+        #     self.block[block_id].register_forward_pre_hook(hook)
+        # This will somehow register the last block's hook for each block.
+
+        def fw_pre_params_copy_hook(module, args):
+            block_id = module._block_id
+            next_block_id = (block_id + 1) % self.num_blocks
+            with torch.cuda.stream(self.copy_stream):
+                self.blocks[next_block_id] = self.blocks[next_block_id].to(
+                    self.device, non_blocking=True)
+                self.param_load_events[next_block_id] = torch.cuda.Event()
+                self.param_load_events[next_block_id].record(self.copy_stream)
+                
+        def fw_params_offload_hook(module, args, output):
+            block_id = module._block_id
+            with torch.cuda.stream(self.copy_stream):
+                if self.compute_events[block_id] is not None:
+                    self.copy_stream.wait_event(self.compute_events[block_id])
+                self.blocks[block_id] = self.blocks[block_id].to(
+                    "cpu", non_blocking=True)
+        
+        for block in self.blocks:
+            block.register_forward_pre_hook(fw_pre_params_copy_hook)
+            block.register_forward_hook(fw_params_offload_hook)
 
 
     def forward(self, x: torch.Tensor):
         self.init_load()
         x = self.recv_data(x)
-        with torch.cuda.stream(self.compute_stream):        
+        with torch.cuda.stream(self.compute_stream):
             if self.data_move_event is not None:
                 self.compute_stream.wait_event(self.data_move_event)
             for block_id in range(self.num_blocks):
-                self.compute_stream.wait_event(self.param_load_events[block_id])
+                if self.param_load_events[block_id] is not None:
+                    self.compute_stream.wait_event(self.param_load_events[block_id])
                 x = self.blocks[block_id](x)
                 self.compute_events[block_id] = torch.cuda.Event()
                 self.compute_events[block_id].record(self.compute_stream)
